@@ -4,7 +4,7 @@ from sklearn.preprocessing import StandardScaler
 
 class Scaler:
     """Apply min-max scaling to the target of each sample.
-    
+
     Params:
         y_min - preset minimum value
         y_max - preset maximum value
@@ -16,7 +16,7 @@ class Scaler:
 
     def fit(self, data):
         """Update the minimum and maximum values according to the data.
-        
+
         Params:
             data - a tf.data.Dataset of (x, y) tuples of sample batches
         """
@@ -27,7 +27,7 @@ class Scaler:
 
     def transform(self, data):
         """Transform the data using min-max scaling on the target of each sample.
-        
+
         Params:
             data - a tf.data.Dataset of (x, y) tuples of sample batches
 
@@ -36,7 +36,7 @@ class Scaler:
         y_range = self.y_max - self.y_min
         scale = tf.where(y_range == 0, tf.ones_like(y_range), y_range)
         return data.map(lambda x, y: (x, (y - self.y_min) / scale))
-    
+
 
 class Normalizer:
     """Apply normalization to the input data of each sample."""
@@ -46,7 +46,7 @@ class Normalizer:
 
     def fit(self, data):
         """Determine the mean and standard deviation by column from the data.
-        
+
         Params:
             data - a tf.data.Dataset of (x, y) tuples of sample batches
         """
@@ -55,7 +55,7 @@ class Normalizer:
 
     def transform(self, data):
         """Transform the data by normalizing the input for each sample.
-        
+
         Params:
             data - a tf.data.Dataset of (x, y) tuples of sample batches
 
@@ -63,5 +63,5 @@ class Normalizer:
         """
         mu = tf.cast(self.sc.mean_, tf.float32)
         std = tf.cast(tf.math.sqrt(self.sc.var_), tf.float32)
-        scale = tf.where(std == 0., tf.ones_like(std), std)
+        scale = tf.where(std == 0.0, tf.ones_like(std), std)
         return data.map(lambda x, y: ((x - mu) / scale, y))

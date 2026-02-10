@@ -12,7 +12,7 @@ import sys
 
 class JSONCSVConverter:
     """Convert experiment results from JSON to CSV.
-    
+
     The JSON files should have the following structure:
     {
         "model1": {
@@ -28,7 +28,7 @@ class JSONCSVConverter:
 
     def convert(self, in_files, out_file, cols=None):
         """Create a CSV file from JSON results.
-        
+
         Params:
             in_files - a list of paths to the JSON files
             out_file - the path to the CSV file to create
@@ -46,29 +46,29 @@ class JSONCSVConverter:
 
     def read(self, in_file):
         """Read that data from a JSON file.
-        
+
         Params:
-            in_file - the path to the JSON 
+            in_file - the path to the JSON
 
         Returns: the dict containing the data
         """
         with open(in_file, "r") as json_file:
             data = json.load(json_file)
         return data
-    
+
     def get_trial(self, name, trial):
         """Create a dataframe from a trial instance.
-        
+
         Params:
             name - the name of the trial
             trial - a dict containing the trial information
-        
+
         Returns: a Pandas Dataframe containing rows for each epoch in the trial
         """
         dfs = []
         for i, res in enumerate(trial["results"]):
             df = pd.DataFrame.from_dict(res)
-            df['iteration'] = i + 1
+            df["iteration"] = i + 1
             dfs.append(df)
         df = pd.concat(dfs)
         for hyper, hyper_val in trial["hypers"].items():
@@ -78,7 +78,7 @@ class JSONCSVConverter:
 
     def get_model(self, name, model):
         """Create a dataframe for a model experiment.
-        
+
         Params:
             name - the name of the model used
             model - a dict containing the results from the model
@@ -95,10 +95,10 @@ class JSONCSVConverter:
 
     def transform(self, data):
         """Transform the data into a Pandas Dataframe.
-        
+
         Params:
             data - the dict containing experiment results
-        
+
         Returns: a Pandas Dataframe with one row per epoch tested
         """
         models = []
@@ -108,23 +108,23 @@ class JSONCSVConverter:
         final = pd.concat(models)
         final["epoch"] = final.index + 1
         return final
-    
+
     def reorder(self, df, cols):
         """Reorder the columns of df.
-        
+
         Params:
             df - the dataframe to reorder
             cols - a list containing the first columns of the new dataframe
                 Other columns will appear in an arbitrary order afterwards
-        
+
         Returns: a dataframe with reordered columns
         """
         last_cols = [col for col in df.columns if col not in cols]
         return df[cols + last_cols]
-    
+
     def write(self, out_file, df):
         """Write the dataframe to a csv file.
-        
+
         Params:
             out_file - a path to a new CSV file
             df - the dataframe to write

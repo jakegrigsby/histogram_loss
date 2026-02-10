@@ -7,11 +7,11 @@ from tensorflow import keras
 class MultiDense(keras.layers.Layer):
     """Multidimensional dense layer.
 
-    Maps the last dimension of input to a multidimensional output. 
+    Maps the last dimension of input to a multidimensional output.
     Creates an array of dense tensors that are applied across the other input dimensions.
-    
+
     For an input shape (n, x1, ..., xd) with shape (y1, ..., yk), this layer outputs
-    (n, x1, ..., x(d-1), y1, ..., yk) through multiplication with a (x1, ..., x(d-1)) shaped collection of 
+    (n, x1, ..., x(d-1), y1, ..., yk) through multiplication with a (x1, ..., x(d-1)) shaped collection of
     (xd, y1, ..., yk) tensors.
 
     Params:
@@ -35,33 +35,32 @@ class MultiDense(keras.layers.Layer):
 
     def build(self, input_shape):
         """Create the kernel for a specified input shape.
-        
+
         Params:
             input_shape - the shape of the batches passed to the layer (includes batchsize)
         """
-        
+
         # Initialize the bias and matrix shape
         if self.individual:
             mat_shape = self.shape[:-1] + input_shape[1:] + self.shape[-1:]
             bias_shape = input_shape[1:-1] + self.shape
         else:
-            mat_shape = self.shape[:-1] + tuple([1 for x in input_shape[1:-1]]) + input_shape[-1:] + self.shape[-1:]
+            mat_shape = (
+                self.shape[:-1]
+                + tuple([1 for x in input_shape[1:-1]])
+                + input_shape[-1:]
+                + self.shape[-1:]
+            )
             bias_shape = self.shape
 
         # Create kernel
         self.w = self.add_weight(
-            name="w",
-            shape= mat_shape,
-            initializer="lecun_normal", 
-            trainable=True
+            name="w", shape=mat_shape, initializer="lecun_normal", trainable=True
         )
         self.b = self.add_weight(
-            name="b",
-            initializer="lecun_normal",
-            shape=bias_shape,
-            trainable=True
+            name="b", initializer="lecun_normal", shape=bias_shape, trainable=True
         )
-        
+
         # Specify permutations
         k = len(input_shape) - 1
         self.input_perm = list(range(1, k)) + [0, k]
@@ -73,14 +72,18 @@ class MultiDense(keras.layers.Layer):
         if self.d == 0:
             l -= 1
         if l > 0:
-            self.output_perm = [(l-2) % (l+1)] + list(range(self.d-1, l - 2)) + list(range(0, self.d-1)) + [l-1]
+            self.output_perm = (
+                [(l - 2) % (l + 1)]
+                + list(range(self.d - 1, l - 2))
+                + list(range(0, self.d - 1))
+                + [l - 1]
+            )
         else:
-            self.output_perm = [0]   
-
+            self.output_perm = [0]
 
     def call(self, inputs):
         """Apply the dense layers to the inputs.
-        
+
         Params:
             inputs - the batched inputs to transform with shape (n, x1, ..., xd)
 

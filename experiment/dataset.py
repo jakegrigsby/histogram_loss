@@ -6,14 +6,16 @@ import tensorflow as tf
 class Dataset:
     """Base dataset class. Provides an interface to get pre-batched and shuffled
     train-(val)-test splits of data to be passed into keras model training API methods.
-    
+
     Params:
         buffer_size - the size of the shuffle buffer; None for size of dataset
         batch_size - the number of samples per mini-batch
         prefetch - the number of mini-batches to preload
     """
 
-    def __init__(self, buffer_size=None, batch_size=32, prefetch=tf.data.AUTOTUNE) -> None:
+    def __init__(
+        self, buffer_size=None, batch_size=32, prefetch=tf.data.AUTOTUNE
+    ) -> None:
         self.batch_size = batch_size
         self.prefetch = prefetch
         self.buf = buffer_size
@@ -21,10 +23,10 @@ class Dataset:
 
     def prepare(self, splits):
         """Prepare the data for use. Shuffle, preprocess, batch, and prefetch.
-        
+
         Params:
             splits - list of datasets to prepare
-        
+
         Returns: data - a list of the prepared datasets
         """
         data = []
@@ -41,11 +43,11 @@ class Dataset:
 
     def shuffle(self, data, reshuffle=True):
         """Shuffle the data according to the buffer size.
-        
+
         Params:
             data - the tf.data.Dataset to shuffle
             reshuffle - True if the data should be reshuffled each iteration
-        
+
         Returns: a tf.data.Dataset with the shuffled data
         """
         if self.buf is None:
@@ -56,7 +58,7 @@ class Dataset:
 
     def preprocess(self, ds):
         """Preprocess the data.
-        
+
         Params:
             args - one unpacked element of the dataset
         """
@@ -72,50 +74,50 @@ class Dataset:
 
     def get_split(self, val_ratio, test_ratio=None, shuffle=False):
         """Create a train-val-(test) split from the data.
-        
+
         Params:
             val_ratio - the size of the validation split;
                 proportional to dataset size if < 1, else number of samples
             test_ratio - the size of the test split; None if train-val split only
                 proportional to dataset size if < 1, else number of samples
             shuffle - True if the data should be shuffled before splitting, False otherwise
-        
+
         Returns: a list of tf.data.Datasets containing the splits ready for use in a model
         """
         data = self.get_data()
-        
+
         if shuffle:
             data = self.shuffle(data, False)
 
-        splits = self.split(data, val_ratio, test_ratio)        
+        splits = self.split(data, val_ratio, test_ratio)
 
         return self.prepare(splits)
-    
+
     def split(self, data, val_ratio, test_ratio):
         """Split the dataset into train-val-(test).
-        
+
         Params:
             data - the tf.data.Dataset to split
             val_ratio - the size of the validation split;
                 proportional to dataset size if < 1, else number of samples
             test_ratio - the size of the test split; None if train-val split only
                 proportional to dataset size if < 1, else number of samples
-        
+
         Returns: a tuple of tf.data.Datasets containing the splits
         """
         if test_ratio is not None:
             return self.three_split(data, val_ratio, test_ratio)
         else:
             return self.two_split(data, val_ratio)
-    
+
     def two_split(self, data, test_ratio):
         """Split the dataset into train-test.
-        
+
         Params:
             data - the tf.data.Dataset to split
             test_ratio - the size of the test split;
                 proportional to dataset size if < 1, else number of samples
-        
+
         Returns: train, test - the tf.data.Datasets containing the splits
         """
         test_len = self.get_num(test_ratio)
@@ -127,7 +129,7 @@ class Dataset:
 
     def get_num(self, size):
         """Return the number of samples given a size input.
-        
+
         Params:
             size - a proportion or number of samples
 
@@ -140,14 +142,14 @@ class Dataset:
 
     def three_split(self, data, val_ratio, test_ratio):
         """Split the dataset into train-val-test.
-        
+
         Params:
             data - the tf.data.Dataset to split
             val_ratio - the size of the validation split;
                 proportional to dataset size if < 1, else number of samples
             test_ratio - the size of the test split;
                 proportional to dataset size if < 1, else number of samples
-        
+
         Returns: train, val, test - the tf.data.Datasets containing the splits
         """
         test_len = self.get_num(test_ratio)

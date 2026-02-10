@@ -2,14 +2,13 @@
 LogGridSearch class.
 """
 
-
 import keras_tuner as kt
 import json
 
 
 class LogGridSearch(kt.GridSearch):
     """Tuner class that stores trial results in a dict.
-    
+
     Params:
         kwargs - arguments for GridSearch class
             ***Should contain metrics!
@@ -26,7 +25,7 @@ class LogGridSearch(kt.GridSearch):
 
     def on_trial_begin(self, trial):
         """Initialize the dict entry when the trial begins.
-        
+
         Params:
             trial - the Trial instance; contains hyperparameters
         """
@@ -44,7 +43,7 @@ class LogGridSearch(kt.GridSearch):
 
     def on_epoch_end(self, trial, model, epoch, logs=None):
         """Update the logs when a batch completes.
-        
+
         Params:
             trial - the Trial instance
             logs - the results dict from model.fit()
@@ -54,7 +53,9 @@ class LogGridSearch(kt.GridSearch):
             self.ex_num += 1
             self.logs[trial.trial_id]["results"].append(self.init_run())
         for key in self.metric_list:
-            self.logs[trial.trial_id]["results"][self.ex_num][key].append(logs.get(key, None))
+            self.logs[trial.trial_id]["results"][self.ex_num][key].append(
+                logs.get(key, None)
+            )
 
     def on_trial_end(self, trial):
         """Save intermediate results at the end of each trial."""

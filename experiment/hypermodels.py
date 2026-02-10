@@ -1,15 +1,24 @@
 """Module containing hypermodels to use for hyperparameter tuning."""
 
-
 import keras_tuner as kt
-from experiment.models import Regression, HLGaussian, HLOneBin, HLUniform, HLProjected
+from experiment.models import (
+    Regression,
+    HLGaussian,
+    HLMCGaussian,
+    HLOneBin,
+    HLUniform,
+    HLProjected,
+    HLGibbs,
+    HLMaxEnt,
+    HLCauchy,
+)
 from tensorflow import keras
 import tensorflow as tf
 
 
 class HyperBase(kt.HyperModel):
-    """Hypermodel that builds and returns compiled Keras models. 
-    
+    """Hypermodel that builds and returns compiled Keras models.
+
     Params:
         name - name of the hypermodel
         loss - the loss to compile the model with
@@ -23,21 +32,28 @@ class HyperBase(kt.HyperModel):
 
     def build(self, hp):
         """Build and return a Keras model.
-        
+
         Params:
             hp - the KerasTuner HyperParameter instance to use to build the model
         """
         model = self.get_model(hp)
         model.compile(optimizer=self.get_opt(hp), loss=self.loss, metrics=self.metrics)
         return model
-    
+
     def get_opt(self, hp):
         """Return the optimizer to use to compile the model.
-        
+
         Params:
             hp - the KerasTuner HyperParameter instance
         """
-        lr = hp.Float("learning_rate", default=1e-3, min_value=1e-4, max_value=1e-2, step=10, sampling="log")
+        lr = hp.Float(
+            "learning_rate",
+            default=1e-3,
+            min_value=1e-4,
+            max_value=1e-2,
+            step=10,
+            sampling="log",
+        )
         b1 = hp.Fixed("beta_1", 0.9)
         b2 = hp.Fixed("beta_2", 0.999)
         eps = hp.Fixed("epsilon", 1e-7)
@@ -47,7 +63,7 @@ class HyperBase(kt.HyperModel):
     def get_model(self, hp):
         """Return the Keras model"""
         pass
-    
+
 
 class HyperRegression(HyperBase):
     """Hypermodel that adds a regression layer to a base model.
@@ -58,19 +74,20 @@ class HyperRegression(HyperBase):
         metrics - the metrics to compile the model with
     """
 
-    def __init__(self, base, loss=None, metrics=None):
-        super().__init__("HyperReg", loss, metrics)
+    def __init__(self, base, loss=None, metrics=None, name="HyperReg"):
+        super().__init__(name, loss, metrics)
         self.base = base
+        self.model_name = name
 
     def get_model(self, hp):
         """Return a regression model."""
-        dropout = hp.Choice("dropout", [0., 0.2, 0.5, 0.8], default=0.5)
-        return Regression(self.base(), dropout)
-    
+        dropout = hp.Choice("dropout", [0.0, 0.2, 0.5, 0.8], default=0.5)
+        return Regression(self.base(), name=self.model_name)
+
 
 class HyperHL(HyperBase):
     """Hypermodel that adds a histogram loss layer to a base model.
-    
+
     Params:
         min_y - the minimum target value
         max_y - the maximum target value
@@ -89,13 +106,29 @@ class HyperHL(HyperBase):
 
     def get_bins(self, hp):
         """Generate the bins given the minimum, maximum, and hyperparameters.
-        
+
         Params:
             hp - the KerasTuner HyperParameter instance to use to build the model
         """
-        padding = hp.Float("padding", default=0.1, min_value=0.025, max_value=0.1, step=2, sampling="log")
-        n_bins = int(hp.Int("n_bins", default=100, min_value=25, max_value=400, step=2, sampling="log"))
-        
+        padding = hp.Float(
+            "padding",
+            default=0.1,
+            min_value=0.025,
+            max_value=0.1,
+            step=2,
+            sampling="log",
+        )
+        n_bins = int(
+            hp.Int(
+                "n_bins",
+                default=100,
+                min_value=25,
+                max_value=400,
+                step=2,
+                sampling="log",
+            )
+        )
+
         # Add padding proportional to the data range
         y_range = self.y_max - self.y_min
         new_min = self.y_min - padding * y_range
@@ -107,7 +140,7 @@ class HyperHL(HyperBase):
 class HyperHLGaussian(HyperHL):
     """Histogram loss hypermodel that uses a truncated Gaussian distribution
     for its targets.
-    
+
     Params:
         base - the base model
         min_y - the minimum target value
@@ -121,23 +154,30 @@ class HyperHLGaussian(HyperHL):
 
     def get_model(self, hp):
         """Return the HLGaussian model according to the hyperparameters.
-        
+
         Params:
             hp - the KerasTuner HyperParameter instance
         """
-        sig_ratio = hp.Float("sig_ratio", default=1., min_value=0.5, max_value=2., step=2, sampling="log")
-        dropout = hp.Choice("dropout", [0., 0.2, 0.5, 0.8], default=0.5)
+        sig_ratio = hp.Float(
+            "sig_ratio",
+            default=1.0,
+            min_value=0.5,
+            max_value=2.0,
+            step=2,
+            sampling="log",
+        )
+        dropout = hp.Choice("dropout", [0.0, 0.2, 0.5, 0.8], default=0.5)
 
         # Calculate sigma as a multiple of the bin width
         bins = self.get_bins(hp)
         bin_width = bins[1] - bins[0]
         sigma = sig_ratio * bin_width
-        return HLGaussian(self.base(), bins, sigma, dropout)
-    
+        return HLGaussian(self.base(), bins, sigma)
+
 
 class HyperHLOneBin(HyperHL):
     """Histogram loss hypermodel using one-hot targets.
-    
+
     Params:
         base - the base Keras model
         min_y - the minimum target value
@@ -151,18 +191,18 @@ class HyperHLOneBin(HyperHL):
 
     def get_model(self, hp):
         """Return the HLOneBin model according to the hyperparameters.
-        
+
         Params:
             hp - the KerasTuner HyperParameter instance
         """
-        dropout = hp.Choice("dropout", [0., 0.2, 0.5, 0.8], default=0.5)
+        dropout = hp.Choice("dropout", [0.0, 0.2, 0.5, 0.8], default=0.5)
         bins = self.get_bins(hp)
-        return HLOneBin(self.base(), bins, dropout)
-    
+        return HLOneBin(self.base(), bins)
+
 
 class HyperHLUniform(HyperHL):
     """Histogram loss hypermodel using one-hot targets.
-    
+
     Params:
         base - the base Keras model
         min_y - the minimum target value
@@ -176,19 +216,19 @@ class HyperHLUniform(HyperHL):
 
     def get_model(self, hp):
         """Return the HLUniform model according to the hyperparameters.
-        
+
         Params:
             hp - the KerasTuner HyperParameter instance
         """
-        dropout = hp.Choice("dropout", [0., 0.05, 0.2, 0.5], default=0.2)
+        dropout = hp.Choice("dropout", [0.0, 0.05, 0.2, 0.5], default=0.2)
         eps = hp.Fixed("eps", 1e-3)
         bins = self.get_bins(hp)
-        return HLUniform(self.base(), bins, dropout, eps)
+        return HLUniform(self.base(), bins, eps)
 
 
 class HyperHLProjected(HyperHL):
     """Histogram loss hypermodel using projected targets.
-    
+
     Params:
         base - the base Keras model
         min_y - the minimum target value
@@ -202,10 +242,156 @@ class HyperHLProjected(HyperHL):
 
     def get_model(self, hp):
         """Return the HLUniform model according to the hyperparameters.
-        
+
         Params:
             hp - the KerasTuner HyperParameter instance
         """
-        dropout = hp.Choice("dropout", [0., 0.05, 0.2, 0.5], default=0.2)
+        dropout = hp.Choice("dropout", [0.0, 0.05, 0.2, 0.5], default=0.2)
         bins = self.get_bins(hp)
-        return HLProjected(self.base(), bins, dropout)
+        return HLProjected(self.base(), bins)
+
+
+class HyperHLMCGaussian(HyperHL):
+    """Histogram loss hypermodel using mean-corrected truncated Gaussian targets.
+
+    Identical interface to HyperHLGaussian but the target distribution is
+    iteratively centred so that E_p[c] = target, removing truncation bias.
+
+    Params:
+        base - the base Keras model
+        min_y - the minimum target value
+        max_y - the maximum target value
+        metrics - the metrics to compile the model with
+    """
+
+    def __init__(self, base, min_y, max_y, metrics=None):
+        super().__init__(min_y, max_y, "HyperHL-MCGaussian", metrics)
+        self.base = base
+
+    def get_model(self, hp):
+        """Return the HLMCGaussian model according to the hyperparameters."""
+        sig_ratio = hp.Float(
+            "sig_ratio",
+            default=1.0,
+            min_value=0.5,
+            max_value=2.0,
+            step=2,
+            sampling="log",
+        )
+        dropout = hp.Choice("dropout", [0.0, 0.2, 0.5, 0.8], default=0.5)
+
+        bins = self.get_bins(hp)
+        bin_width = bins[1] - bins[0]
+        sigma = sig_ratio * bin_width
+        return HLMCGaussian(self.base(), bins, sigma)
+
+
+class HyperHLGibbs(HyperHL):
+    """Histogram loss hypermodel using maximum-entropy (Gibbs) targets.
+
+    Uses the same bins as HL-Gaussian but replaces the truncated Gaussian
+    target with the Gibbs distribution whose mean matches the target value.
+
+    Params:
+        base - the base Keras model
+        min_y - the minimum target value
+        max_y - the maximum target value
+        metrics - the metrics to compile the model with
+    """
+
+    def __init__(self, base, min_y, max_y, metrics=None):
+        super().__init__(min_y, max_y, "HyperHL-Gibbs", metrics)
+        self.base = base
+
+    def get_model(self, hp):
+        """Return the HLGibbs model according to the hyperparameters.
+
+        Params:
+            hp - the KerasTuner HyperParameter instance
+        """
+        dropout = hp.Choice("dropout", [0.0, 0.2, 0.5, 0.8], default=0.5)
+        bins = self.get_bins(hp)
+        return HLGibbs(self.base(), bins)
+
+
+class HyperHLMaxEnt(HyperHL):
+    """Histogram loss hypermodel using two-moment maximum-entropy targets.
+
+    Uses the same bins and sigma as HL-Gaussian for a fair comparison.
+    The target is p_i ∝ exp(λ₁ c_i + λ₂ c_i²) with (λ₁, λ₂) solved
+    to match the target mean and a specified variance σ².
+
+    Params:
+        base - the base Keras model
+        min_y - the minimum target value
+        max_y - the maximum target value
+        metrics - the metrics to compile the model with
+    """
+
+    def __init__(self, base, min_y, max_y, metrics=None):
+        super().__init__(min_y, max_y, "HyperHL-MaxEnt", metrics)
+        self.base = base
+
+    def get_model(self, hp):
+        """Return the HLMaxEnt model according to the hyperparameters.
+
+        Params:
+            hp - the KerasTuner HyperParameter instance
+        """
+        sig_ratio = hp.Float(
+            "sig_ratio",
+            default=1.0,
+            min_value=0.5,
+            max_value=2.0,
+            step=2,
+            sampling="log",
+        )
+        dropout = hp.Choice("dropout", [0.0, 0.2, 0.5, 0.8], default=0.5)
+
+        bins = self.get_bins(hp)
+        bin_width = bins[1] - bins[0]
+        sigma = sig_ratio * bin_width
+        return HLMaxEnt(self.base(), bins, sigma)
+
+
+class HyperHLCauchy(HyperHL):
+    """Histogram loss hypermodel using Student-t (heavy-tailed) targets.
+
+    Uses the same bins and gamma (via sig_ratio) as HL-Gaussian for a fair
+    comparison. The tail parameter nu controls how heavy the tails are:
+    nu=1 is Cauchy, nu→∞ recovers Gaussian.
+
+    Params:
+        base - the base Keras model
+        min_y - the minimum target value
+        max_y - the maximum target value
+        metrics - the metrics to compile the model with
+    """
+
+    def __init__(self, base, min_y, max_y, metrics=None):
+        super().__init__(min_y, max_y, "HyperHL-Cauchy", metrics)
+        self.base = base
+
+    def get_model(self, hp):
+        """Return the HLCauchy model according to the hyperparameters.
+
+        Params:
+            hp - the KerasTuner HyperParameter instance
+        """
+        sig_ratio = hp.Float(
+            "sig_ratio",
+            default=1.0,
+            min_value=0.5,
+            max_value=2.0,
+            step=2,
+            sampling="log",
+        )
+        nu = hp.Float(
+            "nu", default=1.0, min_value=1.0, max_value=100.0, step=10, sampling="log"
+        )
+        dropout = hp.Choice("dropout", [0.0, 0.2, 0.5, 0.8], default=0.5)
+
+        bins = self.get_bins(hp)
+        bin_width = bins[1] - bins[0]
+        gamma = sig_ratio * bin_width
+        return HLCauchy(self.base(), bins, gamma, nu=nu)

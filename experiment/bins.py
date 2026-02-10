@@ -3,25 +3,25 @@
 import tensorflow as tf
 
 
-def get_bins(n_bins, pad_ratio, sig_ratio, low=0., high=1.):
+def get_bins(n_bins, pad_ratio, sig_ratio, low=0.0, high=1.0):
     """Return the histogram bins given the HL parameters.
-    Produces n_bins bins with pad_ratio * sig_ratio * bin_width padding on each side. 
-    
+    Produces n_bins bins with pad_ratio * sig_ratio * bin_width padding on each side.
+
     Produces bins with width according to the following equation:
         w = (high - low) / (n_bins - 2 * pad_ratio * sig_ratio)
 
-    Note: The low/high params must be broadcastable to the target shape to use the 
+    Note: The low/high params must be broadcastable to the target shape to use the
     bins directly for HL-Gaussian. If the dimensions are a subset of the target shape,
     you must add the appropriate axes with tf.expand_dims before using.
 
     Params:
         n_bins - the number of bins to create (includes padding)
-        pad_ratio - the number of sigma of padding to use on each side 
+        pad_ratio - the number of sigma of padding to use on each side
         sig_ratio - the ratio of sigma to bin width
         low - the lower bounds of the histogram support; shape (x1, ..., xn)
         high - the upper boudns of the histogram support; same shape as low
 
-    Returns: 
+    Returns:
         borders - a Tensor of shape (n_bins + 1, x1, ..., xn) of bin borders
         sigma - the sigma to use for HL-Gaussian of shape (x1, ..., xn)
     """

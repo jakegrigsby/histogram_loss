@@ -18,7 +18,9 @@ class Experiment:
 
 class HyperExperiment(Experiment):
 
-    def __init__(self, model, dataset, search_args, fit_args, test_ratio=None, **kwargs) -> None:
+    def __init__(
+        self, model, dataset, search_args, fit_args, test_ratio=None, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self.hmodel = model
         self.ds = dataset
@@ -29,9 +31,7 @@ class HyperExperiment(Experiment):
     def run(self):
         train, test = self.ds.get_split(self.test_ratio)
         tuner = LogGridSearch(
-            hypermodel=self.hmodel,
-            project_name=self.hmodel.name,
-            **self.search_args
+            hypermodel=self.hmodel, project_name=self.hmodel.name, **self.search_args
         )
         tuner.search(x=train, validation_data=test, **self.fit_args)
         self.results = tuner.get_results()

@@ -5,7 +5,7 @@ import pandas as pd
 
 class CSVDataset(Dataset):
     """A dataset from a CSV file.
-    
+
     Params:
         path - the path to the file
         targets - the column name(s) containing the targets to predict
@@ -14,19 +14,25 @@ class CSVDataset(Dataset):
         **kwargs - arguments for the dataset class; includes buffer_size, batch_size, prefetch
     """
 
-    def __init__(self, path, targets, drop=[], **kwargs) -> None:
+    def __init__(self, path, targets, drop=[], header="infer", **kwargs) -> None:
         self.path = path
         self.targets = targets
         self.drop = drop
+        self.header = header
         super().__init__(**kwargs)
 
     def load(self):
         """Read the input data from the file."""
-        df = pd.read_csv(self.path)
+        df = pd.read_csv(self.path, header=self.header)
         df = df.drop(self.drop, axis=1)
         x = df.drop(self.targets, axis=1)
         y = df[self.targets]
-        ds = tf.data.Dataset.from_tensor_slices((tf.convert_to_tensor(x, dtype=tf.float32),tf.convert_to_tensor(y, dtype=tf.float32)))
+        ds = tf.data.Dataset.from_tensor_slices(
+            (
+                tf.convert_to_tensor(x, dtype=tf.float32),
+                tf.convert_to_tensor(y, dtype=tf.float32),
+            )
+        )
         self.ds = ds
 
     def get_data(self):
