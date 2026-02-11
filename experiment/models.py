@@ -213,6 +213,58 @@ class HLProjected(HistModel):
         super().__init__(base, centers, transform, "HL-Projected")
 
 
+class HLPGaussian(HistModel):
+    """Histogram loss with quantile-based bins and truncated Gaussian targets.
+
+    Params:
+        base - the backbone model used to learn features
+        borders - non-uniform bin borders (e.g., quantile-based)
+        sigma - standard deviation of the truncated Gaussian
+    """
+
+    def __init__(self, base, borders, sigma, **kwargs):
+        centers = (borders[:-1] + borders[1:]) / 2
+        transform = TruncGaussHistTransform(borders, sigma)
+        super().__init__(base, centers, transform, "HLP-Gaussian")
+
+
+class HLPGaussianLocal(HistModel):
+    """Histogram loss with quantile-based bins and local-sigma Gaussian targets.
+
+    Sigma is computed per target from the local bin width (sig_ratio * width).
+    """
+
+    def __init__(self, base, borders, sig_ratio, **kwargs):
+        centers = (borders[:-1] + borders[1:]) / 2
+        transform = LocalTruncGaussHistTransform(borders, sig_ratio)
+        super().__init__(base, centers, transform, "HLP-GaussianLocal")
+
+
+class HLPProjected(HistModel):
+    """Histogram loss with quantile-based bins and projected targets."""
+
+    def __init__(self, base, centers, **kwargs):
+        transform = NonUniformProjTransform(centers)
+        super().__init__(base, centers, transform, "HLP-Projected")
+
+
+class HLPGibbs(HistModel):
+    """Histogram loss with quantile-based bins and Gibbs targets."""
+
+    def __init__(self, base, centers, n_iter=10, **kwargs):
+        transform = GibbsTransform(centers, n_iter=n_iter)
+        super().__init__(base, centers, transform, "HLP-Gibbs")
+
+
+class HLPGibbsWidth(HistModel):
+    """Gibbs targets with bin-width base measure for quantile bins."""
+
+    def __init__(self, base, borders, n_iter=10, **kwargs):
+        centers = (borders[:-1] + borders[1:]) / 2
+        transform = GibbsWidthTransform(borders, n_iter=n_iter)
+        super().__init__(base, centers, transform, "HLP-GibbsWidth")
+
+
 class HLMCGaussian(HistModel):
     """Keras model using a histogram loss with a *mean-corrected* truncated
     Gaussian distribution on the targets.

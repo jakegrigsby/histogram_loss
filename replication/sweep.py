@@ -26,6 +26,12 @@ import argparse
 import itertools
 import subprocess
 
+import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 import tensorflow as tf
 from tensorflow import keras
 import keras_tuner as kt
@@ -36,6 +42,7 @@ from replication.csvdataset import CSVDataset
 from experiment.models import *
 from experiment.hypermodels import *
 from experiment.preprocessing import *
+from experiment.bins import get_quantile_bins
 
 
 # ── Defaults ────────────────────────────────────────────────────────────────
@@ -65,7 +72,16 @@ PADDING = 0.125
 
 LR_VALUES = [1e-3, 1e-4]
 
-METHODS = ["HL-Gaussian", "HL-Projected", "HL-Gibbs"]
+METHODS = [
+    "HL-Gaussian",
+    "HL-Projected",
+    "HL-Gibbs",
+    "HLP-Gaussian",
+    "HLP-GaussianLocal",
+    "HLP-Projected",
+    "HLP-Gibbs",
+    "HLP-GibbsWidth",
+]
 
 
 # ── Dataset loading (reused from replication.py) ────────────────────────────
@@ -165,8 +181,119 @@ def base_model_for(dataset, int_dim=None):
     )
 
 
+# ── Quantile bins ───────────────────────────────────────────────────────────
+def _collect_targets_from_ds(dataset, batch_size=8192):
+    """Collect all target values from a tf.data.Dataset as a 1-D numpy array.
+
+    Handles both batched and unbatched datasets by unbatching first.
+    """
+    ys = []
+    for _, y in dataset.unbatch().batch(batch_size):
+        ys.append(y.numpy())
+    return np.concatenate(ys, axis=0).reshape(-1)
+
+
+def build_quantile_bins_from_values(
+    y_scaled, n_bins_values, min_step=1e-6, padding=0.0
+):
+    """Compute quantile-based borders/centers for each n_bins value.
+
+    Expects y_scaled to already be in [0, 1].
+    """
+    bins = {}
+    low = float(np.min(y_scaled)) if len(y_scaled) else 0.0
+    high = float(np.max(y_scaled)) if len(y_scaled) else 1.0
+    for n_bins in n_bins_values:
+        borders, centers = get_quantile_bins(
+            y_scaled,
+            n_bins,
+            min_step=min_step,
+            padding=padding,
+            low=low,
+            high=high,
+        )
+        widths = np.diff(borders)
+        base_width = float(np.median(widths)) if len(widths) > 0 else 1.0
+        bins[n_bins] = {
+            "borders": tf.convert_to_tensor(borders, dtype=tf.float32),
+            "centers": tf.convert_to_tensor(centers, dtype=tf.float32),
+            "base_width": base_width,
+        }
+    return bins
+
+
+def _bin_widths_from_borders(borders):
+    borders = np.asarray(borders, dtype=np.float32).reshape(-1)
+    return np.diff(borders)
+
+
+def _make_bin_spacing_figure(borders_scaled):
+    widths = _bin_widths_from_borders(borders_scaled)
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.plot(widths, marker="o", markersize=2, linewidth=1.0)
+    ax.set_title("Bin widths (scaled)")
+    ax.set_xlabel("bin index")
+    ax.set_ylabel("width")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def _local_sigma_stats(y_scaled, borders, sig_ratio):
+    y = np.asarray(y_scaled, dtype=np.float32).reshape(-1)
+    borders = np.asarray(borders, dtype=np.float32).reshape(-1)
+    idx = np.searchsorted(borders, y, side="right") - 1
+    idx = np.clip(idx, 0, len(borders) - 2)
+    widths = borders[idx + 1] - borders[idx]
+    sigmas = sig_ratio * widths
+    return {
+        "local_sigma_min": float(np.min(sigmas)),
+        "local_sigma_median": float(np.median(sigmas)),
+        "local_sigma_max": float(np.max(sigmas)),
+    }
+
+
+def _gibbs_convergence_stats(model, dataset, n_batches=2):
+    """Estimate mean constraint error for Gibbs-style transforms."""
+    errs = []
+    for _, y in dataset.take(n_batches):
+        probs = model.transform(y)
+        mean = model.mean(probs)
+        y_flat = tf.reshape(tf.cast(y, tf.float32), [-1])
+        mean_flat = tf.reshape(mean, [-1])
+        errs.append(mean_flat - y_flat)
+    if not errs:
+        return {}
+    err = tf.concat(errs, axis=0)
+    abs_err = tf.abs(err)
+    abs_np = abs_err.numpy()
+    return {
+        "gibbs_mean_err_mean": float(tf.reduce_mean(err).numpy()),
+        "gibbs_abs_err_mean": float(np.mean(abs_np)),
+        "gibbs_abs_err_p95": float(np.percentile(abs_np, 95.0)),
+        "gibbs_abs_err_max": float(np.max(abs_np)),
+    }
+
+
+def compile_hist_model(model, lr, metrics):
+    opt = keras.optimizers.Adam(
+        learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=1e-7
+    )
+    model.compile(optimizer=opt, loss=None, metrics=metrics)
+    return model
+
+
 # ── Build a single model for one sweep configuration ───────────────────────
-def build_model(dataset, method, n_bins, sig_ratio, padding, int_dim=None, lr=1e-3):
+def build_model(
+    dataset,
+    method,
+    n_bins,
+    sig_ratio,
+    padding,
+    int_dim=None,
+    lr=1e-3,
+    quantile_bins=None,
+):
     """Build a compiled Keras model for one sweep configuration."""
     y_min, y_max = 0.0, 1.0  # always scale to [0,1]
     base = lambda: base_model_for(dataset, int_dim=int_dim)
@@ -179,6 +306,25 @@ def build_model(dataset, method, n_bins, sig_ratio, padding, int_dim=None, lr=1e
     hp.Fixed("sig_ratio", sig_ratio)
     hp.Fixed("learning_rate", lr)
 
+    if method.startswith("HLP-"):
+        if quantile_bins is None or n_bins not in quantile_bins:
+            raise ValueError("Quantile bins not available for HLP method.")
+        qbins = quantile_bins[n_bins]
+        if method == "HLP-Gaussian":
+            sigma = sig_ratio * qbins["base_width"]
+            model = HLPGaussian(base(), qbins["borders"], sigma)
+        elif method == "HLP-GaussianLocal":
+            model = HLPGaussianLocal(base(), qbins["borders"], sig_ratio)
+        elif method == "HLP-Projected":
+            model = HLPProjected(base(), qbins["centers"])
+        elif method == "HLP-Gibbs":
+            model = HLPGibbs(base(), qbins["centers"])
+        elif method == "HLP-GibbsWidth":
+            model = HLPGibbsWidth(base(), qbins["borders"])
+        else:
+            raise ValueError(f"Unknown method: {method}")
+        return compile_hist_model(model, lr, metrics)
+
     if method == "HL-Gaussian":
         hyper = HyperHLGaussian(base, y_min, y_max, metrics=metrics)
     elif method == "HL-MCGaussian":
@@ -187,6 +333,8 @@ def build_model(dataset, method, n_bins, sig_ratio, padding, int_dim=None, lr=1e
         hyper = HyperHLProjected(base, y_min, y_max, metrics=metrics)
     elif method == "HL-Gibbs":
         hyper = HyperHLGibbs(base, y_min, y_max, metrics=metrics)
+    elif method == "HL-OneBin":
+        hyper = HyperHLOneBin(base, y_min, y_max, metrics=metrics)
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -272,7 +420,12 @@ def build_grid(
     grid = []
     for method in methods:
         for n_bins in n_bins_values:
-            if method in ("HL-Gaussian", "HL-MCGaussian"):
+            if method in (
+                "HL-Gaussian",
+                "HL-MCGaussian",
+                "HLP-Gaussian",
+                "HLP-GaussianLocal",
+            ):
                 ratios = sig_ratio_values
             else:
                 ratios = [1.0]  # sig_ratio is unused for Projected/Gibbs
@@ -298,6 +451,9 @@ def build_grid(
 def run_sweep(args):
     """Run the sweep for this worker's slice of the grid."""
     dataset = get_dataset_by_name(args.data_dir, args.dataset)
+    use_hlp = any(m.startswith("HLP-") for m in args.methods)
+    bins_cache = {}
+    bins_log_cache = set()
 
     grid = build_grid(
         methods=args.methods,
@@ -340,21 +496,46 @@ def run_sweep(args):
         # Fresh random state
         keras.utils.set_random_seed(seed)
 
-        # Build model
-        model = build_model(
-            dataset, method, n_bins, sig_ratio, PADDING, int_dim=int_dim, lr=lr
-        )
-
         # Prepare data
         train, test = dataset.get_split(TEST_RATIO, shuffle=True)
         sc = Scaler(*dataset.bounds)
         train = sc.transform(train)
         test = sc.transform(test)
+
+        # Compute quantile bins from TRAIN split (scaled to [0,1]) if needed.
+        quantile_bins = None
+        if use_hlp and method.startswith("HLP-"):
+            if seed not in bins_cache:
+                print(f"Computing quantile bins from train split (seed={seed})...")
+                y_scaled = _collect_targets_from_ds(train)
+                y_scaled = np.clip(y_scaled, 0.0, 1.0)
+                bins_cache[seed] = {
+                    "bins": build_quantile_bins_from_values(
+                        y_scaled, args.n_bins, padding=PADDING
+                    ),
+                    "y_scaled": y_scaled,
+                }
+            quantile_bins = bins_cache[seed]["bins"]
+            y_scaled_cache = bins_cache[seed]["y_scaled"]
+        else:
+            y_scaled_cache = None
+
         norm = Normalizer()
         norm.fit(train)
         train = norm.transform(train)
         test = norm.transform(test)
 
+        # Build model
+        model = build_model(
+            dataset,
+            method,
+            n_bins,
+            sig_ratio,
+            PADDING,
+            int_dim=int_dim,
+            lr=lr,
+            quantile_bins=quantile_bins,
+        )
         # Wandb
         group = f"sweep/{args.dataset}/{method}"
         if args.run_prefix:
@@ -375,6 +556,9 @@ def run_sweep(args):
             "learning_rate": lr,
             "epochs": dataset.epochs,
         }
+        config["binning"] = "quantile" if method.startswith("HLP-") else "uniform"
+        if method.startswith("HLP-") and quantile_bins is not None:
+            config["bin_base_width"] = quantile_bins[n_bins]["base_width"]
 
         wandb.init(
             entity=WANDB_ENTITY,
@@ -385,6 +569,38 @@ def run_sweep(args):
         )
 
         try:
+            if method.startswith("HLP-") and quantile_bins is not None:
+                cache_key = (seed, n_bins)
+                if cache_key not in bins_log_cache:
+                    q_borders = quantile_bins[n_bins]["borders"].numpy()
+                    fig = _make_bin_spacing_figure(q_borders)
+                    widths = _bin_widths_from_borders(q_borders)
+                    wandb.log(
+                        {
+                            "bin_width_min": float(np.min(widths)),
+                            "bin_width_median": float(np.median(widths)),
+                            "bin_width_max": float(np.max(widths)),
+                            "bin_spacing": wandb.Image(fig),
+                        },
+                        commit=False,
+                    )
+                    plt.close(fig)
+                    bins_log_cache.add(cache_key)
+
+            if method == "HLP-GaussianLocal" and y_scaled_cache is not None:
+                q_borders = quantile_bins[n_bins]["borders"].numpy()
+                sigma_stats = _local_sigma_stats(y_scaled_cache, q_borders, sig_ratio)
+                wandb.log(sigma_stats, commit=False)
+
+            if method in (
+                "HL-Gibbs",
+                "HLP-Gibbs",
+                "HLP-GibbsWidth",
+            ):
+                gibbs_stats = _gibbs_convergence_stats(model, train)
+                if gibbs_stats:
+                    wandb.log(gibbs_stats, commit=False)
+
             results = run_one(model, dataset, train, test, dataset.epochs)
             results.update(config)
 

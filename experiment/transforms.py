@@ -51,6 +51,43 @@ class TruncGaussHistTransform(keras.layers.Layer):
         return tf.math.erf((a - mu) / (tf.math.sqrt(2.0) * sig))
 
 
+class LocalTruncGaussHistTransform(keras.layers.Layer):
+    """Like TruncGaussHistTransform but uses a per-target sigma.
+
+    Sigma is computed as sig_ratio * local_bin_width, where local_bin_width
+    is the width of the bin containing the target value.
+    """
+
+    def __init__(self, borders, sig_ratio):
+        super().__init__(trainable=False, name="LocalTruncGaussHistTransform")
+        self.borders = tf.cast(borders, tf.float32)
+        self.sig_ratio = tf.cast(sig_ratio, tf.float32)
+        k = len(self.borders.shape)
+        self.perm_out = list(range(1, k + 1)) + [0]
+
+    def call(self, inputs):
+        targets = tf.cast(inputs, tf.float32)
+        t = tf.reshape(targets, [-1])
+
+        # Find the bin index for each target.
+        idx = tf.searchsorted(self.borders, t, side="right") - 1
+        n_bins = tf.size(self.borders) - 1
+        idx = tf.clip_by_value(idx, 0, n_bins - 1)
+
+        left = tf.gather(self.borders, idx)
+        right = tf.gather(self.borders, idx + 1)
+        width = right - left
+        sigma = tf.maximum(self.sig_ratio * width, 1e-8)
+
+        border_targets = self._adjust_and_erf(tf.expand_dims(self.borders, 1), t, sigma)
+        two_z = border_targets[-1] - border_targets[0]
+        x_transformed = (border_targets[1:] - border_targets[:-1]) / two_z
+        return tf.transpose(x_transformed, self.perm_out)
+
+    def _adjust_and_erf(self, a, mu, sig):
+        return tf.math.erf((a - mu) / (tf.math.sqrt(2.0) * sig))
+
+
 class OneHotTransform(keras.layers.Layer):
     """Layer that transforms a target into a one-hot representation
     based on the histogram bin that it lies in.
@@ -142,6 +179,56 @@ class ProjTransform(keras.layers.Layer):
         indices = tf.concat([tf.stack([inds, i], 1), tf.stack([inds, i + 1], 1)], 0)
         values = tf.concat([1 - p, p], 0)
         return tf.scatter_nd(indices, values, (n, tf.size(self.centers)))
+
+
+class NonUniformProjTransform(keras.layers.Layer):
+    """Project the target onto the two nearest centers with non-uniform spacing.
+
+    This is a generalization of ProjTransform that uses arbitrary (sorted) bin
+    centers and linearly interpolates between the bracketing centers.
+    """
+
+    def __init__(self, centers):
+        super().__init__(trainable=False, name="NonUniformProjTransform")
+        self.centers = tf.cast(centers, tf.float32)  # (N,)
+
+    def call(self, inputs):
+        """Return the binned probability vectors for the inputs.
+
+        Params:
+            inputs - the targets to transform (shape: [batch] or [batch, 1])
+
+        Returns:
+            tensor of shape (batch, n_bins) with two non-zero entries per row
+        """
+        targets = tf.reshape(tf.cast(inputs, tf.float32), [-1])
+        centers = self.centers
+
+        min_c = centers[0]
+        max_c = centers[-1]
+        t = tf.clip_by_value(targets, min_c, max_c)
+
+        # Find the first center >= target (right index)
+        idx = tf.searchsorted(centers, t, side="left")  # (B,)
+        n_bins = tf.shape(centers)[0]
+        right = tf.clip_by_value(idx, 0, n_bins - 1)
+        left = tf.clip_by_value(right - 1, 0, n_bins - 1)
+
+        c_left = tf.gather(centers, left)
+        c_right = tf.gather(centers, right)
+        denom = tf.maximum(c_right - c_left, 1e-12)
+        w_right = tf.where(
+            tf.equal(left, right), tf.zeros_like(denom), (t - c_left) / denom
+        )
+        w_left = 1.0 - w_right
+
+        n = tf.shape(t)[0]
+        inds = tf.range(n, dtype=tf.int32)
+        idx_left = tf.stack([inds, tf.cast(left, tf.int32)], axis=1)
+        idx_right = tf.stack([inds, tf.cast(right, tf.int32)], axis=1)
+        indices = tf.concat([idx_left, idx_right], axis=0)
+        values = tf.concat([w_left, w_right], axis=0)
+        return tf.scatter_nd(indices, values, tf.stack([n, n_bins]))
 
 
 class TwoMomentMaxEntTransform(keras.layers.Layer):
@@ -301,6 +388,50 @@ class GibbsTransform(keras.layers.Layer):
 
         # Final probabilities
         final_logits = lambdas * centers
+        return tf.nn.softmax(final_logits, axis=-1)
+
+
+class GibbsWidthTransform(keras.layers.Layer):
+    """Gibbs transform with bin-width base measure.
+
+    Defines p_i ∝ w_i * exp(λ * c_i), where w_i is bin width and c_i is bin center.
+    This corresponds to maximum-entropy with a non-uniform base measure.
+    """
+
+    def __init__(self, borders, n_iter=10):
+        super().__init__(trainable=False, name="GibbsWidthTransform")
+        borders = tf.cast(borders, tf.float32)
+        centers = (borders[:-1] + borders[1:]) / 2
+        widths = borders[1:] - borders[:-1]
+        self.centers = tf.cast(centers, tf.float32)  # (N,)
+        self.log_widths = tf.math.log(tf.maximum(widths, 1e-12))  # (N,)
+        self.n_iter = n_iter
+
+    def call(self, inputs):
+        targets = tf.expand_dims(tf.cast(inputs, tf.float32), -1)  # (B, 1)
+        centers = tf.expand_dims(self.centers, 0)  # (1, N)
+        logw = tf.expand_dims(self.log_widths, 0)  # (1, N)
+
+        # Clamp targets to be strictly inside the bin range
+        eps = 1e-3
+        min_c = tf.reduce_min(self.centers)
+        max_c = tf.reduce_max(self.centers)
+        targets = tf.clip_by_value(targets, min_c + eps, max_c - eps)
+
+        # Newton-Raphson: start from λ=0 (base-measure distribution)
+        lambdas = tf.zeros_like(targets)  # (B, 1)
+
+        for _ in range(self.n_iter):
+            logits = logw + lambdas * centers  # (B, N)
+            probs = tf.nn.softmax(logits, axis=-1)  # (B, N)
+            mean = tf.reduce_sum(probs * centers, axis=-1, keepdims=True)  # (B, 1)
+            var = tf.reduce_sum(
+                probs * tf.square(centers - mean), axis=-1, keepdims=True
+            )  # (B, 1)
+            step = (mean - targets) / tf.maximum(var, 1e-6)
+            lambdas = lambdas - tf.clip_by_value(step, -10.0, 10.0)
+
+        final_logits = logw + lambdas * centers
         return tf.nn.softmax(final_logits, axis=-1)
 
 

@@ -118,15 +118,26 @@ ALL_METRICS = [
 ]
 
 
-def load_results(results_dir, dataset):
-    """Load all JSON result files for a dataset into a DataFrame."""
-    pattern = os.path.join(results_dir, dataset, "*.json")
-    files = sorted(glob.glob(pattern))
-    if not files:
-        raise FileNotFoundError(f"No results found at {pattern}")
+def load_results(results_dirs, dataset):
+    """Load all JSON result files for a dataset into a DataFrame.
+
+    ``results_dirs`` may be a single path (str) or a list of paths.
+    Results from all directories are merged into one DataFrame.
+    """
+    if isinstance(results_dirs, str):
+        results_dirs = [results_dirs]
+
+    all_files = []
+    for rdir in results_dirs:
+        pattern = os.path.join(rdir, dataset, "*.json")
+        all_files.extend(sorted(glob.glob(pattern)))
+
+    if not all_files:
+        searched = [os.path.join(d, dataset, "*.json") for d in results_dirs]
+        raise FileNotFoundError(f"No results found at {searched}")
 
     records = []
-    for f in files:
+    for f in all_files:
         with open(f) as fh:
             records.append(json.load(fh))
 
@@ -136,7 +147,7 @@ def load_results(results_dir, dataset):
     elif "lr" in df.columns and "learning_rate" not in df.columns:
         df["learning_rate"] = df["lr"]
     print(
-        f"Loaded {len(df)} results for '{dataset}' "
+        f"Loaded {len(df)} results for '{dataset}' from {len(results_dirs)} dir(s) "
         f"({df['method'].nunique()} methods, "
         f"{df.groupby(CONFIG_COLS).ngroups} configs × seeds)"
     )
@@ -196,11 +207,23 @@ METHOD_COLORS = {
     "HL-Gaussian": "#2274A5",  # steel blue
     "HL-Projected": "#E76F51",  # burnt orange
     "HL-Gibbs": "#2CA02C",  # green
+    "HL-MCGaussian": "#9467BD",  # purple
+    "HLP-Gaussian": "#4F9DD8",  # light blue
+    "HLP-Projected": "#F4A261",  # light orange
+    "HLP-Gibbs": "#6CCB5F",  # light green
+    "HLP-GaussianLocal": "#3C7FB1",  # blue-gray
+    "HLP-GibbsWidth": "#3D9C3D",  # green
 }
 METHOD_MARKERS = {
     "HL-Gaussian": "o",
     "HL-Projected": "D",
     "HL-Gibbs": "s",
+    "HL-MCGaussian": "P",
+    "HLP-Gaussian": "^",
+    "HLP-Projected": "v",
+    "HLP-Gibbs": "P",
+    "HLP-GaussianLocal": "X",
+    "HLP-GibbsWidth": "*",
 }
 _FALLBACK_COLORS = ["#2CA02C", "#9467BD", "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22"]
 _FALLBACK_MARKERS = ["s", "^", "P", "X", "v", "<", ">"]
@@ -744,7 +767,12 @@ def main():
     p.add_argument(
         "--dataset", default="ctscan", choices=["ctscan", "bike", "pole", "songyear"]
     )
-    p.add_argument("--results_dir", default="sweep_results")
+    p.add_argument(
+        "--results_dir",
+        nargs="+",
+        default=["sweep_results"],
+        help="One or more directories containing sweep results",
+    )
     p.add_argument(
         "--metric",
         default="test_rmse",
@@ -813,6 +841,8 @@ def main():
     if args.summary or args.plot == "none":
         print_summary(df, args.metric, args.top_n)
         if args.plot == "none":
+            if args.gap:
+                print_gap_analysis(df, args.metric, args.x)
             return
 
     outfile = args.out
